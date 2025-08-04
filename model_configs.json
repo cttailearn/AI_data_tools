@@ -1,17 +1,11 @@
 {
-  "算家平台qwen3-30B-A3B": {
-    "name": "算家平台qwen3-30B-A3B",
-    "base_url": "http://xn-a.suanjiayun.com:57366/v1",
-    "api_key": "sjyun-7d2a330b15178863788bea4806a3f65a",
-    "model_name": "Qwen3-30B-A3B-Instruct-2507",
-    "temperature": 0.7
-  },
-  "官方deepseek": {
-    "name": "官方deepseek",
+  "deepseek": {
+    "name": "deepseek",
     "base_url": "https://api.deepseek.com/v1",
-    "api_key": "sk-aeef64e243ba47f7bb0e1973c91588d9",
+    "api_key": "sk-",
     "model_name": "deepseek-chat",
     "temperature": 0.3,
     "max_tokens": 4096
   }
+
 }
