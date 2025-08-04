@@ -1,0 +1,7 @@
+gradio
+pandas
+openai
+tenacity
+chardet
+python-docx
+PyPDF2
