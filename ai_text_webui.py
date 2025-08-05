@@ -572,63 +572,80 @@ def get_task_prompt(task_name: str) -> str:
     """获取任务提示词"""
     return task_manager.get_task_prompt(task_name)
 
-def add_custom_task(task_name: str, task_prompt: str) -> Tuple[str, str]:
+def add_custom_task(task_name: str, task_prompt: str) -> Tuple[str, gr.Dropdown, gr.Dropdown]:
     """添加自定义任务"""
     if not task_name or not task_prompt:
-        return "任务名称和提示词不能为空", gr.Dropdown(choices=task_manager.get_task_names())
+        task_choices = task_manager.get_task_names()
+        return "任务名称和提示词不能为空", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     
     try:
         task_manager.add_task(task_name, task_prompt)
-        updated_choices = gr.Dropdown(choices=task_manager.get_task_names(), value=task_name)
-        return f"✅ 任务 '{task_name}' 添加成功", updated_choices
+        task_choices = task_manager.get_task_names()
+        updated_dropdown1 = gr.Dropdown(choices=task_choices, value=task_name)
+        updated_dropdown2 = gr.Dropdown(choices=task_choices, value=task_name)
+        return f"✅ 任务 '{task_name}' 添加成功", updated_dropdown1, updated_dropdown2
     except Exception as e:
-        return f"❌ 添加任务失败: {str(e)}", gr.Dropdown(choices=task_manager.get_task_names())
+        task_choices = task_manager.get_task_names()
+        return f"❌ 添加任务失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
 
-def delete_task(task_name: str) -> Tuple[str, str]:
+def delete_task(task_name: str) -> Tuple[str, gr.Dropdown, gr.Dropdown]:
     """删除任务（默认任务会重置为原始值）"""
     if not task_name:
-        return "请选择要删除的任务", gr.Dropdown(choices=task_manager.get_task_names())
+        task_choices = task_manager.get_task_names()
+        return "请选择要删除的任务", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     
     try:
         is_default = task_manager.is_default_task(task_name)
         if task_manager.delete_task(task_name):
-            updated_choices = gr.Dropdown(choices=task_manager.get_task_names())
+            task_choices = task_manager.get_task_names()
+            updated_dropdown1 = gr.Dropdown(choices=task_choices)
+            updated_dropdown2 = gr.Dropdown(choices=task_choices)
             if is_default:
-                return f"✅ 默认任务 '{task_name}' 已重置为原始值", updated_choices
+                return f"✅ 默认任务 '{task_name}' 已重置为原始值", updated_dropdown1, updated_dropdown2
             else:
-                return f"✅ 自定义任务 '{task_name}' 删除成功", updated_choices
+                return f"✅ 自定义任务 '{task_name}' 删除成功", updated_dropdown1, updated_dropdown2
         else:
-            return f"❌ 无法删除任务 '{task_name}'", gr.Dropdown(choices=task_manager.get_task_names())
+            task_choices = task_manager.get_task_names()
+            return f"❌ 无法删除任务 '{task_name}'", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     except Exception as e:
-        return f"❌ 删除任务失败: {str(e)}", gr.Dropdown(choices=task_manager.get_task_names())
+        task_choices = task_manager.get_task_names()
+        return f"❌ 删除任务失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
 
-def edit_task(task_name: str, new_prompt: str) -> Tuple[str, str]:
+def edit_task(task_name: str, new_prompt: str) -> Tuple[str, gr.Dropdown, gr.Dropdown]:
     """编辑任务提示词"""
     if not task_name:
-        return "请选择要编辑的任务", gr.Dropdown(choices=task_manager.get_task_names())
+        task_choices = task_manager.get_task_names()
+        return "请选择要编辑的任务", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     
     if not new_prompt.strip():
-        return "提示词不能为空", gr.Dropdown(choices=task_manager.get_task_names())
+        task_choices = task_manager.get_task_names()
+        return "提示词不能为空", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     
     try:
         task_manager.add_task(task_name, new_prompt.strip())
-        updated_choices = gr.Dropdown(choices=task_manager.get_task_names(), value=task_name)
+        task_choices = task_manager.get_task_names()
+        updated_dropdown1 = gr.Dropdown(choices=task_choices, value=task_name)
+        updated_dropdown2 = gr.Dropdown(choices=task_choices, value=task_name)
         is_default = task_manager.is_default_task(task_name)
         if is_default:
-            return f"✅ 默认任务 '{task_name}' 修改成功", updated_choices
+            return f"✅ 默认任务 '{task_name}' 修改成功", updated_dropdown1, updated_dropdown2
         else:
-            return f"✅ 任务 '{task_name}' 修改成功", updated_choices
+            return f"✅ 任务 '{task_name}' 修改成功", updated_dropdown1, updated_dropdown2
     except Exception as e:
-        return f"❌ 编辑任务失败: {str(e)}", gr.Dropdown(choices=task_manager.get_task_names())
+        task_choices = task_manager.get_task_names()
+        return f"❌ 编辑任务失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
 
-def reload_tasks() -> Tuple[str, str]:
+def reload_tasks() -> Tuple[str, gr.Dropdown, gr.Dropdown]:
     """重新加载任务"""
     try:
         task_manager.reload_tasks()
-        updated_choices = gr.Dropdown(choices=task_manager.get_task_names())
-        return "✅ 任务列表已重新加载", updated_choices
+        task_choices = task_manager.get_task_names()
+        updated_dropdown1 = gr.Dropdown(choices=task_choices)
+        updated_dropdown2 = gr.Dropdown(choices=task_choices)
+        return "✅ 任务列表已重新加载", updated_dropdown1, updated_dropdown2
     except Exception as e:
-        return f"❌ 重新加载失败: {str(e)}", gr.Dropdown(choices=task_manager.get_task_names())
+        task_choices = task_manager.get_task_names()
+        return f"❌ 重新加载失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
 
 def process_data_stream(file_upload, selected_columns, task_name: str, 
                         batch_size: int = 10, max_workers: int = 3, 
@@ -1557,27 +1574,27 @@ def create_interface():
         edit_task_btn.click(
             edit_task,
             inputs=[task_dropdown, task_prompt_display],
-            outputs=[task_status, task_dropdown]
+            outputs=[task_status, task_dropdown, selected_task]
         )
         
         # 添加自定义任务
         add_task_btn.click(
             add_custom_task,
             inputs=[new_task_name, new_task_prompt],
-            outputs=[task_status, task_dropdown]
+            outputs=[task_status, task_dropdown, selected_task]
         )
         
         # 删除任务
         delete_task_btn.click(
             delete_task,
             inputs=[task_dropdown],
-            outputs=[task_status, task_dropdown]
+            outputs=[task_status, task_dropdown, selected_task]
         )
         
         # 重新加载任务
         reload_tasks_btn.click(
             reload_tasks,
-            outputs=[task_status, task_dropdown]
+            outputs=[task_status, task_dropdown, selected_task]
         )
         
         # 处理数据
