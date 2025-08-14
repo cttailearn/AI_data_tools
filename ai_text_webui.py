@@ -572,27 +572,28 @@ def get_task_prompt(task_name: str) -> str:
     """获取任务提示词"""
     return task_manager.get_task_prompt(task_name)
 
-def add_custom_task(task_name: str, task_prompt: str) -> Tuple[str, gr.Dropdown, gr.Dropdown]:
+def add_custom_task(task_name: str, task_prompt: str) -> Tuple[str, gr.Dropdown, gr.Dropdown, gr.Dropdown]:
     """添加自定义任务"""
     if not task_name or not task_prompt:
         task_choices = task_manager.get_task_names()
-        return "任务名称和提示词不能为空", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
+        return "任务名称和提示词不能为空", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     
     try:
         task_manager.add_task(task_name, task_prompt)
         task_choices = task_manager.get_task_names()
         updated_dropdown1 = gr.Dropdown(choices=task_choices, value=task_name)
         updated_dropdown2 = gr.Dropdown(choices=task_choices, value=task_name)
-        return f"✅ 任务 '{task_name}' 添加成功", updated_dropdown1, updated_dropdown2
+        updated_dropdown3 = gr.Dropdown(choices=task_choices, value=task_name)
+        return f"✅ 任务 '{task_name}' 添加成功", updated_dropdown1, updated_dropdown2, updated_dropdown3
     except Exception as e:
         task_choices = task_manager.get_task_names()
-        return f"❌ 添加任务失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
+        return f"❌ 添加任务失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
 
-def delete_task(task_name: str) -> Tuple[str, gr.Dropdown, gr.Dropdown]:
+def delete_task(task_name: str) -> Tuple[str, gr.Dropdown, gr.Dropdown, gr.Dropdown]:
     """删除任务（默认任务会重置为原始值）"""
     if not task_name:
         task_choices = task_manager.get_task_names()
-        return "请选择要删除的任务", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
+        return "请选择要删除的任务", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     
     try:
         is_default = task_manager.is_default_task(task_name)
@@ -600,52 +601,55 @@ def delete_task(task_name: str) -> Tuple[str, gr.Dropdown, gr.Dropdown]:
             task_choices = task_manager.get_task_names()
             updated_dropdown1 = gr.Dropdown(choices=task_choices)
             updated_dropdown2 = gr.Dropdown(choices=task_choices)
+            updated_dropdown3 = gr.Dropdown(choices=task_choices)
             if is_default:
-                return f"✅ 默认任务 '{task_name}' 已重置为原始值", updated_dropdown1, updated_dropdown2
+                return f"✅ 默认任务 '{task_name}' 已重置为原始值", updated_dropdown1, updated_dropdown2, updated_dropdown3
             else:
-                return f"✅ 自定义任务 '{task_name}' 删除成功", updated_dropdown1, updated_dropdown2
+                return f"✅ 自定义任务 '{task_name}' 删除成功", updated_dropdown1, updated_dropdown2, updated_dropdown3
         else:
             task_choices = task_manager.get_task_names()
-            return f"❌ 无法删除任务 '{task_name}'", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
+            return f"❌ 无法删除任务 '{task_name}'", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     except Exception as e:
         task_choices = task_manager.get_task_names()
-        return f"❌ 删除任务失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
+        return f"❌ 删除任务失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
 
-def edit_task(task_name: str, new_prompt: str) -> Tuple[str, gr.Dropdown, gr.Dropdown]:
+def edit_task(task_name: str, new_prompt: str) -> Tuple[str, gr.Dropdown, gr.Dropdown, gr.Dropdown]:
     """编辑任务提示词"""
     if not task_name:
         task_choices = task_manager.get_task_names()
-        return "请选择要编辑的任务", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
+        return "请选择要编辑的任务", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     
     if not new_prompt.strip():
         task_choices = task_manager.get_task_names()
-        return "提示词不能为空", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
+        return "提示词不能为空", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
     
     try:
         task_manager.add_task(task_name, new_prompt.strip())
         task_choices = task_manager.get_task_names()
         updated_dropdown1 = gr.Dropdown(choices=task_choices, value=task_name)
         updated_dropdown2 = gr.Dropdown(choices=task_choices, value=task_name)
+        updated_dropdown3 = gr.Dropdown(choices=task_choices, value=task_name)
         is_default = task_manager.is_default_task(task_name)
         if is_default:
-            return f"✅ 默认任务 '{task_name}' 修改成功", updated_dropdown1, updated_dropdown2
+            return f"✅ 默认任务 '{task_name}' 修改成功", updated_dropdown1, updated_dropdown2, updated_dropdown3
         else:
-            return f"✅ 任务 '{task_name}' 修改成功", updated_dropdown1, updated_dropdown2
+            return f"✅ 任务 '{task_name}' 修改成功", updated_dropdown1, updated_dropdown2, updated_dropdown3
     except Exception as e:
         task_choices = task_manager.get_task_names()
-        return f"❌ 编辑任务失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
+        return f"❌ 编辑任务失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
 
-def reload_tasks() -> Tuple[str, gr.Dropdown, gr.Dropdown]:
+def reload_tasks() -> Tuple[str, gr.Dropdown, gr.Dropdown, gr.Dropdown]:
     """重新加载任务"""
     try:
         task_manager.reload_tasks()
         task_choices = task_manager.get_task_names()
         updated_dropdown1 = gr.Dropdown(choices=task_choices)
         updated_dropdown2 = gr.Dropdown(choices=task_choices)
-        return "✅ 任务列表已重新加载", updated_dropdown1, updated_dropdown2
+        updated_dropdown3 = gr.Dropdown(choices=task_choices)
+        return "✅ 任务列表已重新加载", updated_dropdown1, updated_dropdown2, updated_dropdown3
     except Exception as e:
         task_choices = task_manager.get_task_names()
-        return f"❌ 重新加载失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
+        return f"❌ 重新加载失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
 
 def process_data_stream(file_upload, selected_columns, task_name: str, 
                         batch_size: int = 10, max_workers: int = 3, 
@@ -1353,6 +1357,52 @@ def get_processed_data() -> str:
     except Exception as e:
         return f"获取数据预览失败: {str(e)}"
 
+# ==================== 文本直接处理 ====================
+
+def process_single_text(input_text: str, task_name: str) -> Tuple[str, str]:
+    """
+    处理单个文本输入
+    
+    Args:
+        input_text: 输入的文本内容
+        task_name: 处理任务名称
+    
+    Returns:
+        Tuple[str, str]: (处理状态, 处理结果)
+    """
+    global current_model_client
+    
+    if not input_text or not input_text.strip():
+        return "⚠️ 输入文本不能为空", ""
+    
+    if current_model_client is None:
+        return "❌ 请先加载AI模型", ""
+    
+    if not task_name:
+        return "❌ 请选择处理任务", ""
+    
+    try:
+        # 获取任务提示词
+        prompt = task_manager.get_task_prompt(task_name)
+        if not prompt:
+            return f"❌ 任务 '{task_name}' 不存在", ""
+        
+        logger.info(f"开始处理文本，任务: {task_name}")
+        
+        # 调用AI模型处理
+        result = current_model_client.process_text(input_text, prompt)
+        
+        if result is not None and str(result).strip() != "":
+            logger.info(f"文本处理完成，结果长度: {len(str(result))}")
+            return f"✅ 处理完成\n任务: {task_name}\n输入长度: {len(input_text)} 字符\n输出长度: {len(str(result))} 字符", str(result)
+        else:
+            return "❌ 处理失败：AI模型返回空结果", ""
+    
+    except Exception as e:
+        error_msg = f"处理过程中发生错误: {str(e)}"
+        logger.error(error_msg)
+        return f"❌ {error_msg}", ""
+
 # ==================== Gradio界面 ====================
 
 def create_interface():
@@ -1450,7 +1500,109 @@ def create_interface():
                         - "删除/重置"对默认任务是重置，对自定义任务是删除
                         """)
             
-            # 第三个标签页：文件处理与结果
+            # 第三个标签页：文本输入处理（新增）
+            with gr.TabItem("✍️ 文本处理"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 输入文本")
+                        input_text = gr.Textbox(label="待处理文本", lines=10, placeholder="在此输入要处理的文本...")
+                        with gr.Row():
+                            copy_input_btn = gr.Button("📋 一键复制输入")
+                            paste_to_input_btn = gr.Button("📥 粘贴到输入")
+                        
+                        gr.Markdown("### 处理任务")
+                        single_selected_task = gr.Dropdown(
+                            choices=task_manager.get_task_names(),
+                            value=task_manager.get_task_names()[0] if task_manager.get_task_names() else None,
+                            label="选择处理任务"
+                        )
+                        
+                        run_single_btn = gr.Button("🚀 处理文本", variant="primary")
+                        single_status = gr.Textbox(label="处理状态", interactive=False)
+                    
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 输出结果")
+                        output_text = gr.Textbox(label="处理结果", lines=12)
+                        with gr.Row():
+                            paste_output_btn = gr.Button("📥 一键粘贴到输出")
+                            copy_output_btn = gr.Button("📋 一键复制输出")
+                        
+                # 复制/粘贴前端交互（使用JS）
+                copy_input_js = """
+                function() {
+                    const textarea = document.querySelector('textarea[data-testid="textbox"]');
+                    if (textarea && textarea.value) {
+                        navigator.clipboard.writeText(textarea.value).then(() => {
+                            console.log('文本已复制到剪贴板');
+                        }).catch(err => {
+                            console.error('复制失败:', err);
+                        });
+                    }
+                }
+                """
+                
+                paste_to_input_js = """
+                async function() {
+                    try {
+                        const text = await navigator.clipboard.readText();
+                        const textarea = document.querySelector('textarea[data-testid="textbox"]');
+                        if (textarea) {
+                            textarea.value = text;
+                            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
+                        return text;
+                    } catch (err) {
+                        console.error('粘贴失败:', err);
+                        return '';
+                    }
+                }
+                """
+                
+                copy_output_js = """
+                function() {
+                    const textareas = document.querySelectorAll('textarea[data-testid="textbox"]');
+                    const outputTextarea = textareas[textareas.length - 1]; // 获取最后一个textarea（输出框）
+                    if (outputTextarea && outputTextarea.value) {
+                        navigator.clipboard.writeText(outputTextarea.value).then(() => {
+                            console.log('输出结果已复制到剪贴板');
+                        }).catch(err => {
+                            console.error('复制失败:', err);
+                        });
+                    }
+                }
+                """
+                
+                paste_output_js = """
+                async function() {
+                    try {
+                        const text = await navigator.clipboard.readText();
+                        const textareas = document.querySelectorAll('textarea[data-testid="textbox"]');
+                        const outputTextarea = textareas[textareas.length - 1]; // 获取最后一个textarea（输出框）
+                        if (outputTextarea) {
+                            outputTextarea.value = text;
+                            outputTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
+                        return text;
+                    } catch (err) {
+                        console.error('粘贴失败:', err);
+                        return '';
+                    }
+                }
+                """
+                
+                copy_input_btn.click(None, [], [], js=copy_input_js)
+                paste_to_input_btn.click(None, [], [input_text], js=paste_to_input_js)
+                copy_output_btn.click(None, [], [], js=copy_output_js)
+                paste_output_btn.click(None, [], [output_text], js=paste_output_js)
+                
+                # 事件：处理文本
+                run_single_btn.click(
+                    fn=process_single_text,
+                    inputs=[input_text, single_selected_task],
+                    outputs=[single_status, output_text]
+                )
+            
+            # 第四个标签页：文件处理与结果
             with gr.TabItem("📁 文件处理"):
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -1486,7 +1638,7 @@ def create_interface():
                                 label="批次大小"
                             )
                             max_workers = gr.Slider(
-                                minimum=1, maximum=10, value=3, step=1,
+                                minimum=1, maximum=50, value=3, step=1,
                                 label="并发数"
                             )
                         
@@ -1574,27 +1726,27 @@ def create_interface():
         edit_task_btn.click(
             edit_task,
             inputs=[task_dropdown, task_prompt_display],
-            outputs=[task_status, task_dropdown, selected_task]
+            outputs=[task_status, task_dropdown, selected_task, single_selected_task]
         )
         
         # 添加自定义任务
         add_task_btn.click(
             add_custom_task,
             inputs=[new_task_name, new_task_prompt],
-            outputs=[task_status, task_dropdown, selected_task]
+            outputs=[task_status, task_dropdown, selected_task, single_selected_task]
         )
         
         # 删除任务
         delete_task_btn.click(
             delete_task,
             inputs=[task_dropdown],
-            outputs=[task_status, task_dropdown, selected_task]
+            outputs=[task_status, task_dropdown, selected_task, single_selected_task]
         )
         
         # 重新加载任务
         reload_tasks_btn.click(
             reload_tasks,
-            outputs=[task_status, task_dropdown, selected_task]
+            outputs=[task_status, task_dropdown, selected_task, single_selected_task]
         )
         
         # 处理数据
