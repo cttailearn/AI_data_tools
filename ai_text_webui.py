@@ -15,6 +15,8 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
+import fnmatch
+import glob
 
 # 可选依赖
 try:
@@ -135,9 +137,16 @@ class AIModelClient:
         logger.info(f"AI模型客户端已初始化: {config.name}")
     
     @retry(
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type((openai.RateLimitError, openai.APITimeoutError))
+        retry=retry_if_exception_type((
+            openai.RateLimitError, 
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+            ConnectionError,
+            TimeoutError,
+            Exception  # 捕获所有异常进行重试
+        ))
     )
     def process_text(self, text: str, prompt: str) -> str:
         """使用AI模型处理文本"""
@@ -156,8 +165,17 @@ class AIModelClient:
             
             return response.choices[0].message.content.strip()
             
+        except (openai.APIConnectionError, ConnectionError) as e:
+            logger.warning(f"连接错误，正在重试: {str(e)}")
+            raise
+        except (openai.APITimeoutError, TimeoutError) as e:
+            logger.warning(f"请求超时，正在重试: {str(e)}")
+            raise
+        except openai.RateLimitError as e:
+            logger.warning(f"请求频率限制，正在重试: {str(e)}")
+            raise
         except Exception as e:
-            logger.error(f"AI处理失败: {str(e)}")
+            logger.error(f"AI处理失败: {str(e)}，正在重试")
             raise
     
     def test_connection(self) -> bool:
@@ -445,6 +463,33 @@ current_dataframe = None
 original_file_path = None
 task_manager = PromptTaskManager()
 
+# 中断处理相关变量
+processing_interrupted = False
+processing_lock = threading.Lock()
+
+# ==================== 中断处理函数 ====================
+
+def set_processing_interrupted(interrupted: bool = True):
+    """设置处理中断标志"""
+    global processing_interrupted
+    with processing_lock:
+        processing_interrupted = interrupted
+        if interrupted:
+            logger.info("用户请求中断处理")
+        else:
+            logger.info("重置中断标志")
+
+def is_processing_interrupted() -> bool:
+    """检查是否请求中断处理"""
+    global processing_interrupted
+    with processing_lock:
+        return processing_interrupted
+
+def interrupt_processing() -> str:
+    """中断当前处理"""
+    set_processing_interrupted(True)
+    return "⏹️ 已请求中断处理，正在停止..."
+
 # ==================== Gradio界面函数 ====================
 
 def load_model(preset_name: str, custom_name: str, custom_base_url: str, 
@@ -504,6 +549,116 @@ def load_model(preset_name: str, custom_name: str, custom_base_url: str,
         error_msg = f"❌ 模型加载失败: {str(e)}"
         logger.error(error_msg)
         return error_msg, ""
+
+def filter_files_by_pattern(files: List[str], pattern: str, allowed_extensions: List[str]) -> List[str]:
+    """根据模式和扩展名过滤文件列表"""
+    if not files:
+        return []
+    
+    filtered_files = []
+    
+    for file_path in files:
+        file_obj = Path(file_path)
+        
+        # 检查扩展名
+        if file_obj.suffix.lower() not in allowed_extensions:
+            continue
+        
+        # 检查文件名模式
+        if pattern and pattern.strip():
+            # 支持通配符匹配
+            if not fnmatch.fnmatch(file_obj.name, pattern.strip()):
+                continue
+        
+        filtered_files.append(file_path)
+    
+    return filtered_files
+
+def handle_directory_upload(files, pattern: str = "", allowed_extensions: List[str] = None) -> Tuple[str, str, gr.Dropdown]:
+    """处理目录上传和文件过滤"""
+    global current_dataframe, original_file_path
+    
+    if not files:
+        return "请选择文件", "", gr.update(choices=[], visible=False)
+    
+    if allowed_extensions is None:
+        allowed_extensions = [".txt", ".md", ".csv", ".xlsx", ".xls", ".pdf", ".docx", ".doc"]
+    
+    # 获取所有上传的文件路径
+    file_paths = [f.name for f in files]
+    
+    # 应用过滤器
+    filtered_files = filter_files_by_pattern(file_paths, pattern, allowed_extensions)
+    
+    if not filtered_files:
+        return "❌ 没有找到匹配的文件", "", gr.update(choices=[], visible=False)
+    
+    # 生成文件信息
+    total_files = len(file_paths)
+    matched_files = len(filtered_files)
+    
+    file_info = f"📁 总文件数: {total_files}\n✅ 匹配文件数: {matched_files}\n🔍 过滤模式: {pattern if pattern else '无'}\n📋 允许类型: {', '.join(allowed_extensions)}"
+    
+    # 生成匹配文件列表显示
+    files_display = "\n".join([f"• {Path(f).name}" for f in filtered_files[:10]])
+    if len(filtered_files) > 10:
+        files_display += f"\n... 还有 {len(filtered_files) - 10} 个文件"
+    
+    file_info += f"\n\n📋 匹配的文件:\n{files_display}"
+    
+    # 预览第一个匹配的文件
+    preview_content = ""
+    column_choices = []
+    
+    if filtered_files:
+        try:
+            first_file = filtered_files[0]
+            df = read_single_file(first_file)
+            if df is not None:
+                # 设置全局变量
+                current_dataframe = df
+                original_file_path = first_file
+                
+                # 获取列名
+                column_choices = df.columns.tolist()
+                
+                preview_content = f"📄 预览文件: {Path(first_file).name}\n\n{df.head(3).to_string(max_cols=3, max_colwidth=50)}"
+            else:
+                preview_content = f"📄 预览文件: {Path(first_file).name}\n❌ 无法读取文件内容"
+        except Exception as e:
+            preview_content = f"❌ 预览失败: {str(e)}"
+    
+    # 返回列选择下拉菜单的更新
+    if column_choices:
+        dropdown_update = gr.update(choices=column_choices, visible=True, value=None)
+    else:
+        dropdown_update = gr.update(choices=[], visible=False)
+    
+    return file_info, preview_content, dropdown_update
+
+def read_single_file(file_path: str) -> Optional[pd.DataFrame]:
+    """读取单个文件并返回DataFrame"""
+    try:
+        file_extension = Path(file_path).suffix.lower()
+        
+        if file_extension == '.txt':
+            return FileProcessor.read_txt_file(file_path)
+        elif file_extension == '.md':
+            return FileProcessor.read_md_file(file_path)
+        elif file_extension in ['.xlsx', '.xls']:
+            df, _ = FileProcessor.read_excel_file(file_path)
+            return df
+        elif file_extension == '.csv':
+            return FileProcessor.read_csv_file(file_path)
+        elif file_extension == '.pdf':
+            return FileProcessor.read_pdf_file(file_path)
+        elif file_extension in ['.docx', '.doc']:
+            return FileProcessor.read_docx_file(file_path)
+        else:
+            return None
+    except Exception as e:
+        logger.error(f"读取文件失败 {file_path}: {str(e)}")
+        return None
 
 def handle_file_upload(file) -> Tuple[str, str, gr.Dropdown]:
     """上传并读取文件"""
@@ -651,12 +806,398 @@ def reload_tasks() -> Tuple[str, gr.Dropdown, gr.Dropdown, gr.Dropdown]:
         task_choices = task_manager.get_task_names()
         return f"❌ 重新加载失败: {str(e)}", gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices), gr.Dropdown(choices=task_choices)
 
+def process_multiple_files_stream(files, selected_columns, task_name: str, 
+                                  batch_size: int = 10, max_workers: int = 3, 
+                                  save_location: str = "当前文件的output目录", custom_save_path: str = ""):
+    """流式处理多个文件（支持目录上传），使用批次处理控制内存使用"""
+    global current_model_client
+    
+    if current_model_client is None:
+        yield "❌ 请先加载AI模型", "", 0.0
+        return
+    
+    if not files:
+        yield "❌ 请先上传文件", "", 0.0
+        return
+    
+    if not task_name:
+        yield "❌ 请选择处理任务", "", 0.0
+        return
+    
+    try:
+        # 获取任务提示词
+        prompt = task_manager.get_task_prompt(task_name)
+        if not prompt:
+            yield "❌ 选择的任务无效", "", 0.0
+            return
+        
+        # 获取文件路径列表
+        file_paths = [f.name for f in files]
+        total_files = len(file_paths)
+        
+        processing_log = []
+        processing_log.append(f"📁 开始处理 {total_files} 个文件")
+        processing_log.append(f"📦 批次大小: {batch_size}, 并发数: {max_workers}")
+        processing_log.append(f"💡 批次处理用于控制多文件处理时的内存使用")
+        
+        all_results = []
+        total_processed_items = 0
+        
+        for file_idx, file_path in enumerate(file_paths):
+            # 检查中断
+            if is_processing_interrupted():
+                processing_log.append("⚠️ 处理已被用户中断")
+                yield "\n".join(processing_log), "", (file_idx / total_files) * 100
+                return
+            
+            processing_log.append(f"\n📄 处理文件 {file_idx + 1}/{total_files}: {os.path.basename(file_path)}")
+            yield "\n".join(processing_log), "", (file_idx / total_files) * 100
+            
+            # 读取单个文件
+            df = read_single_file(file_path)
+            if df is None:
+                processing_log.append(f"❌ 无法读取文件: {os.path.basename(file_path)}")
+                continue
+            
+            # 设置全局变量以便现有函数使用
+            global current_dataframe, original_file_path
+            current_dataframe = df
+            original_file_path = file_path
+            
+            # 处理单个文件（多文件模式下使用批次处理）
+            file_processed = False
+            for log, preview, progress in process_data_stream_single_file_with_batch(df, file_path, selected_columns, task_name, batch_size, max_workers, save_location, custom_save_path):
+                if "❌" in log:
+                    processing_log.append(f"❌ 文件处理失败: {os.path.basename(file_path)}")
+                    break
+                elif "✅" in log:
+                    file_processed = True
+                    total_processed_items += 1
+                    processing_log.append(f"✅ 文件处理完成: {os.path.basename(file_path)}")
+                    if preview:
+                        all_results.append(f"文件: {os.path.basename(file_path)}\n{preview}")
+                    break
+                
+                # 更新进度
+                file_progress = (file_idx + progress / 100) / total_files * 100
+                yield "\n".join(processing_log), preview, file_progress
+        
+        # 生成最终结果
+        final_preview = "\n\n" + "="*50 + "\n\n".join(all_results) if all_results else "没有成功处理的文件"
+        processing_log.append(f"\n🎉 批量处理完成！成功处理 {total_processed_items}/{total_files} 个文件")
+        
+        yield "\n".join(processing_log), final_preview, 100.0
+        
+    except Exception as e:
+        yield f"❌ 批量处理过程中发生错误: {str(e)}", "", 0.0
+
+def process_data_stream_single_file_with_batch(df, file_path, selected_columns, task_name: str, 
+                                               batch_size: int = 10, max_workers: int = 3, 
+                                               save_location: str = "当前文件的output目录", custom_save_path: str = ""):
+    """处理单个文件的流式函数，使用批次处理控制内存使用（用于多文件处理）"""
+    global current_model_client
+    
+    if current_model_client is None:
+        yield "❌ 请先加载AI模型", "", 0.0
+        return
+    
+    # 处理多列选择
+    if isinstance(selected_columns, str):
+        columns_to_process = [selected_columns]
+    else:
+        columns_to_process = selected_columns if selected_columns else []
+    
+    if not columns_to_process:
+        yield "❌ 请选择要处理的列", "", 0.0
+        return
+    
+    # 验证列是否存在
+    missing_columns = [col for col in columns_to_process if col not in df.columns]
+    if missing_columns:
+        yield f"❌ 以下列不存在: {', '.join(missing_columns)}", "", 0.0
+        return
+    
+    try:
+        # 获取任务提示词
+        prompt = task_manager.get_task_prompt(task_name)
+        if not prompt:
+            yield "❌ 选择的任务无效", "", 0.0
+            return
+        
+        processing_log = []
+        processing_log.append(f"📁 正在处理文件: {os.path.basename(file_path)}")
+        processing_log.append(f"📦 批次大小: {batch_size}，并发数: {max_workers}")
+        processing_log.append(f"📝 处理任务: {task_name}")
+        processing_log.append("-" * 40)
+        
+        # 创建处理后的DataFrame副本
+        processed_df = df.copy()
+        total_processed = 0
+        
+        # 处理每一列
+        for col_index, column in enumerate(columns_to_process):
+            processing_log.append(f"\n🔄 正在处理列: {column} ({col_index + 1}/{len(columns_to_process)})")
+            
+            # 获取要处理的数据
+            data_to_process = df[column].astype(str).tolist()
+            
+            # 过滤空值并保存原始索引
+            indexed_data = [(i, item) for i, item in enumerate(data_to_process) if item.strip()]
+            
+            if not indexed_data:
+                processing_log.append(f"⚠️ 列 {column} 中没有有效数据，跳过")
+                continue
+            
+            total_items = len(indexed_data)
+            processing_log.append(f"📝 该列有效数据: {total_items} 条")
+            
+            # 批次处理数据（用于多文件处理时控制内存）
+            processed_count = 0
+            new_column_name = f"{column}_processed"
+            processed_df[new_column_name] = processed_df[column]  # 初始化处理后的列
+            
+            # 分批处理数据
+            for batch_start in range(0, total_items, batch_size):
+                # 检查是否请求中断
+                if is_processing_interrupted():
+                    processing_log.append(f"\n⏹️ 用户请求中断，正在保存当前已处理的结果...")
+                    break
+                
+                batch_end = min(batch_start + batch_size, total_items)
+                batch_data = indexed_data[batch_start:batch_end]
+                
+                processing_log.append(f"📦 处理批次 {batch_start//batch_size + 1}: {batch_start+1}-{batch_end}/{total_items}")
+                
+                # 使用线程池处理当前批次
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # 提交批次中的所有任务
+                    future_to_index = {}
+                    for index, item in batch_data:
+                        if len(item) > 10000:
+                            item = item[:10000] + "...[文本过长，已截断]"
+                        future = executor.submit(current_model_client.process_text, item, prompt)
+                        future_to_index[future] = index
+                    
+                    # 收集批次结果
+                    batch_processed = 0
+                    for future in as_completed(future_to_index):
+                        try:
+                            result = future.result(timeout=60)
+                            index = future_to_index[future]
+                            processed_df.loc[index, new_column_name] = result
+                            batch_processed += 1
+                            processed_count += 1
+                            total_processed += 1
+                        except Exception as e:
+                            index = future_to_index[future]
+                            processed_df.loc[index, new_column_name] = f"处理失败: {str(e)}"
+                            processing_log.append(f"⚠️ 处理失败 (行{index}): {str(e)}")
+                
+                # 更新进度
+                column_progress = (processed_count / total_items) * 100
+                overall_progress = ((col_index * 100) + column_progress) / len(columns_to_process)
+                
+                processing_log.append(f"✅ 批次完成，已处理: {processed_count}/{total_items}")
+                yield "\n".join(processing_log), "", overall_progress
+                
+                # 如果被中断，跳出循环
+                if is_processing_interrupted():
+                    break
+            
+            # 如果被中断，跳出列循环
+            if is_processing_interrupted():
+                break
+        
+        # 保存处理结果
+        try:
+            if save_location == "自定义目录" and custom_save_path.strip():
+                output_dir = Path(custom_save_path.strip())
+            else:
+                output_dir = Path(file_path).parent / "output"
+            
+            output_dir.mkdir(exist_ok=True)
+            
+            # 生成输出文件名
+            base_name = Path(file_path).stem
+            output_file = output_dir / f"{base_name}_processed.xlsx"
+            
+            # 保存文件
+            processed_df.to_excel(output_file, index=False)
+            
+            processing_log.append(f"\n💾 文件已保存: {output_file}")
+            processing_log.append(f"✅ 处理完成！共处理 {total_processed} 条数据")
+            
+            # 生成预览
+            preview = generate_result_preview(processed_df, [f"{col}_processed" for col in columns_to_process])
+            
+            yield "\n".join(processing_log), preview, 100.0
+            
+        except Exception as e:
+            processing_log.append(f"❌ 保存文件时发生错误: {str(e)}")
+            yield "\n".join(processing_log), "", 100.0
+    
+    except Exception as e:
+        yield f"❌ 处理过程中发生错误: {str(e)}", "", 0.0
+
+def process_data_stream_single_file(df, file_path, selected_columns, task_name: str, 
+                                   batch_size: int = 10, max_workers: int = 3, 
+                                   save_location: str = "当前文件的output目录", custom_save_path: str = ""):
+    """处理单个文件的流式函数，单个文件不使用批次处理"""
+    global current_model_client
+    
+    if current_model_client is None:
+        yield "❌ 请先加载AI模型", "", 0.0
+        return
+    
+    # 处理多列选择
+    if isinstance(selected_columns, str):
+        columns_to_process = [selected_columns]
+    else:
+        columns_to_process = selected_columns if selected_columns else []
+    
+    if not columns_to_process:
+        yield "❌ 请选择要处理的列", "", 0.0
+        return
+    
+    # 验证列是否存在
+    missing_columns = [col for col in columns_to_process if col not in df.columns]
+    if missing_columns:
+        yield f"❌ 以下列不存在: {', '.join(missing_columns)}", "", 0.0
+        return
+    
+    try:
+        # 获取任务提示词
+        prompt = task_manager.get_task_prompt(task_name)
+        if not prompt:
+            yield "❌ 选择的任务无效", "", 0.0
+            return
+        
+        processing_log = []
+        processing_log.append(f"📁 正在处理文件: {os.path.basename(file_path)}")
+        processing_log.append(f"⚙️ 并发数: {max_workers}")
+        processing_log.append(f"📝 处理任务: {task_name}")
+        processing_log.append("-" * 40)
+        
+        # 创建处理后的DataFrame副本
+        processed_df = df.copy()
+        total_processed = 0
+        
+        # 处理每一列
+        for col_index, column in enumerate(columns_to_process):
+            processing_log.append(f"\n🔄 正在处理列: {column} ({col_index + 1}/{len(columns_to_process)})")
+            
+            # 获取要处理的数据
+            data_to_process = df[column].astype(str).tolist()
+            
+            # 过滤空值并保存原始索引
+            indexed_data = [(i, item) for i, item in enumerate(data_to_process) if item.strip()]
+            
+            if not indexed_data:
+                processing_log.append(f"⚠️ 列 {column} 中没有有效数据，跳过")
+                continue
+            
+            total_items = len(indexed_data)
+            processing_log.append(f"📝 该列有效数据: {total_items} 条")
+            
+            # 单个文件一次性处理所有数据（不分批）
+            processed_count = 0
+            new_column_name = f"{column}_processed"
+            processed_df[new_column_name] = processed_df[column]  # 初始化处理后的列
+            
+            processing_log.append(f"🚀 开始处理所有数据...")
+            yield "\n".join(processing_log), "", (col_index / len(columns_to_process)) * 100
+            
+            # 使用线程池一次性处理所有数据
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有任务
+                future_to_index = {}
+                for index, item in indexed_data:
+                    if len(item) > 10000:
+                        item = item[:10000] + "...[文本过长，已截断]"
+                    future = executor.submit(current_model_client.process_text, item, prompt)
+                    future_to_index[future] = index
+                
+                # 收集所有结果
+                for future in as_completed(future_to_index):
+                    # 检查是否请求中断
+                    if is_processing_interrupted():
+                        processing_log.append(f"\n⏹️ 用户请求中断，正在保存当前已处理的结果...")
+                        # 取消未完成的任务
+                        for f in future_to_index:
+                            if not f.done():
+                                f.cancel()
+                        break
+                    
+                    try:
+                        result = future.result(timeout=60)
+                        index = future_to_index[future]
+                        processed_df.loc[index, new_column_name] = result
+                        processed_count += 1
+                        total_processed += 1
+                        
+                        # 每处理10个项目更新一次进度
+                        if processed_count % 10 == 0 or processed_count == total_items:
+                            column_progress = (processed_count / total_items) * 100
+                            overall_progress = ((col_index + column_progress / 100) / len(columns_to_process)) * 100
+                            processing_log[-1] = f"🔄 处理进度: {processed_count}/{total_items} ({column_progress:.1f}%)"
+                            yield "\n".join(processing_log), "", overall_progress
+                            
+                    except Exception as e:
+                        index = future_to_index[future]
+                        processed_df.loc[index, new_column_name] = f"处理失败: {str(e)}"
+                        processing_log.append(f"⚠️ 处理失败 (行{index}): {str(e)}")
+            
+            processing_log.append(f"✅ 列 {column} 处理完成，已处理: {processed_count}/{total_items}")
+            
+            # 如果被中断，跳出列循环
+            if is_processing_interrupted():
+                break
+        
+        # 保存处理结果
+        try:
+            if save_location == "自定义目录" and custom_save_path.strip():
+                output_dir = Path(custom_save_path.strip())
+            else:
+                output_dir = Path(file_path).parent / "output"
+            
+            output_dir.mkdir(exist_ok=True)
+            
+            # 生成输出文件名
+            base_name = Path(file_path).stem
+            output_file = output_dir / f"{base_name}_processed.xlsx"
+            
+            # 保存文件
+            processed_df.to_excel(output_file, index=False)
+            
+            processing_log.append(f"\n💾 文件已保存: {output_file}")
+            processing_log.append(f"✅ 处理完成！共处理 {total_processed} 条数据")
+            
+            # 生成预览
+            preview = generate_result_preview(processed_df, [f"{col}_processed" for col in columns_to_process])
+            
+            yield "\n".join(processing_log), preview, 100.0
+            
+        except Exception as e:
+            processing_log.append(f"❌ 保存文件时发生错误: {str(e)}")
+            yield "\n".join(processing_log), "", 100.0
+    
+    except Exception as e:
+        yield f"❌ 处理过程中发生错误: {str(e)}", "", 0.0
+
 def process_data_stream(file_upload, selected_columns, task_name: str, 
                         batch_size: int = 10, max_workers: int = 3, 
                         save_location: str = "当前文件的output目录", custom_save_path: str = ""):
     """流式处理数据（支持多线程和多列选择，实时进度显示）"""
     global current_model_client, current_dataframe, original_file_path
     
+    # 检查是否为多文件上传
+    if isinstance(file_upload, list) and len(file_upload) > 1:
+        # 多文件处理
+        for log, preview, progress in process_multiple_files_stream(file_upload, selected_columns, task_name, batch_size, max_workers, save_location, custom_save_path):
+            yield log, preview, progress
+        return
+    
+    # 单文件处理（原有逻辑）
     if current_model_client is None:
         yield "❌ 请先加载AI模型", "", 0.0
         return
@@ -723,8 +1264,18 @@ def process_data_stream(file_upload, selected_columns, task_name: str,
         
         global_processed_count = 0
         
+        # 重置中断标志
+        set_processing_interrupted(False)
+        
         # 处理每一列
         for col_index, column in enumerate(columns_to_process):
+            # 检查是否请求中断
+            if is_processing_interrupted():
+                processing_log.append(f"\n⏹️ 用户请求中断，正在保存当前已处理的结果...")
+                # 立即保存当前已处理的结果
+                yield "\n".join(processing_log), "", overall_progress
+                break
+                
             processing_log.append(f"\n🔄 正在处理列: {column} ({col_index + 1}/{len(columns_to_process)})")
             processing_log.append(f"⏰ 开始时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
             
@@ -754,68 +1305,159 @@ def process_data_stream(file_upload, selected_columns, task_name: str,
             start_time = time.time()
             
             def process_single_item(indexed_item):
-                """处理单个文本项"""
+                """处理单个文本项，包含重试机制"""
                 index, item = indexed_item
-                try:
-                    # 限制单个文本长度
-                    if len(item) > 10000:
-                        item = item[:10000] + "...[文本过长，已截断]"
-                    
-                    result = current_model_client.process_text(item, prompt)
-                    return index, result, True
-                except Exception as e:
-                    error_msg = f"处理失败: {str(e)}"
-                    logger.error(f"处理第 {index+1} 项失败: {str(e)}")
-                    return index, error_msg, False
-            
-            # 使用线程池进行并发处理
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # 提交所有任务
-                future_to_index = {executor.submit(process_single_item, item): item[0] for item in indexed_data}
+                max_retries = 3
+                retry_count = 0
                 
-                # 收集结果
-                for future in as_completed(future_to_index):
+                while retry_count <= max_retries:
                     try:
-                        index, result, success = future.result()
-                        results_dict[index] = result
-                        processed_count += 1
-                        global_processed_count += 1
+                        # 限制单个文本长度
+                        if len(item) > 10000:
+                            item = item[:10000] + "...[文本过长，已截断]"
                         
-                        # 计算进度
-                        column_progress = processed_count / total_items * 100
-                        overall_progress = global_processed_count / total_items_all_columns * 100
+                        result = current_model_client.process_text(item, prompt)
+                        if retry_count > 0:
+                            logger.info(f"第 {index+1} 项在第 {retry_count+1} 次尝试后成功处理")
+                        return index, result, True
                         
-                        # 计算处理速度
-                        elapsed_time = time.time() - start_time
-                        if elapsed_time > 0:
-                            speed = processed_count / elapsed_time
-                            remaining_items = total_items - processed_count
-                            eta = remaining_items / speed if speed > 0 else 0
+                    except (openai.APIConnectionError, ConnectionError) as e:
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            wait_time = min(2 ** retry_count, 10)  # 指数退避，最大10秒
+                            logger.warning(f"第 {index+1} 项连接错误 (尝试 {retry_count}/{max_retries+1}): {str(e)}，{wait_time}秒后重试")
+                            time.sleep(wait_time)
+                        else:
+                            error_msg = f"处理失败: 连接错误 - {str(e)} (已重试{max_retries}次)"
+                            logger.error(f"第 {index+1} 项最终失败: {error_msg}")
+                            return index, error_msg, False
                             
-                            # 实时详细的进度显示（每处理一个就更新）
-                            if processed_count % 1 == 0 or processed_count == total_items:
-                                current_log = processing_log.copy()
-                                status_msg = (
-                                    f"🔄 实时状态 | 列: {column} ({col_index + 1}/{len(columns_to_process)}) | "
-                                    f"当前列进度: {processed_count}/{total_items} ({column_progress:.1f}%) | "
-                                    f"总体进度: {global_processed_count}/{total_items_all_columns} ({overall_progress:.1f}%) | "
-                                    f"处理速度: {speed:.1f}条/秒 | 预计剩余时间: {eta:.0f}秒"
-                                )
-                                current_log.append(status_msg)
-                                
-                                # 显示最近处理的内容预览（成功的情况）
-                                if success and len(result) > 0:
-                                    preview_text = result[:50] + "..." if len(result) > 50 else result
-                                    current_log.append(f"   ✅ 最新处理结果预览: {preview_text}")
-                                elif not success:
-                                    current_log.append(f"   ❌ 处理失败: {result}")
-                                
-                                # 实时输出状态
-                                yield "\n".join(current_log), "", overall_progress
-                        
+                    except (openai.APITimeoutError, TimeoutError) as e:
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            wait_time = min(2 ** retry_count, 10)
+                            logger.warning(f"第 {index+1} 项超时错误 (尝试 {retry_count}/{max_retries+1}): {str(e)}，{wait_time}秒后重试")
+                            time.sleep(wait_time)
+                        else:
+                            error_msg = f"处理失败: 超时错误 - {str(e)} (已重试{max_retries}次)"
+                            logger.error(f"第 {index+1} 项最终失败: {error_msg}")
+                            return index, error_msg, False
+                            
+                    except openai.RateLimitError as e:
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            wait_time = min(5 * retry_count, 30)  # 速率限制需要更长等待时间
+                            logger.warning(f"第 {index+1} 项速率限制 (尝试 {retry_count}/{max_retries+1}): {str(e)}，{wait_time}秒后重试")
+                            time.sleep(wait_time)
+                        else:
+                            error_msg = f"处理失败: 速率限制 - {str(e)} (已重试{max_retries}次)"
+                            logger.error(f"第 {index+1} 项最终失败: {error_msg}")
+                            return index, error_msg, False
+                            
                     except Exception as e:
-                        logger.error(f"获取处理结果失败: {str(e)}")
-                        global_processed_count += 1
+                        # 对于其他类型的错误，只重试一次
+                        if retry_count == 0:
+                            retry_count += 1
+                            wait_time = 2
+                            logger.warning(f"第 {index+1} 项未知错误 (尝试 {retry_count}/{max_retries+1}): {str(e)}，{wait_time}秒后重试")
+                            time.sleep(wait_time)
+                        else:
+                            error_msg = f"处理失败: {str(e)}"
+                            logger.error(f"第 {index+1} 项最终失败: {error_msg}")
+                            return index, error_msg, False
+            
+            # 实现真正的批次处理逻辑
+            processing_log.append(f"📦 批次大小: {batch_size} 条/批次")
+            total_batches = (total_items + batch_size - 1) // batch_size
+            processing_log.append(f"📊 总批次数: {total_batches} 批次")
+            yield "\n".join(processing_log), "", overall_progress
+            
+            # 按批次处理数据
+            for batch_num in range(total_batches):
+                # 检查是否请求中断
+                if is_processing_interrupted():
+                    processing_log.append(f"\n⏹️ 检测到中断请求，停止当前列的处理...")
+                    yield "\n".join(processing_log), "", overall_progress
+                    break
+                
+                # 计算当前批次的数据范围
+                batch_start = batch_num * batch_size
+                batch_end = min(batch_start + batch_size, total_items)
+                batch_data = indexed_data[batch_start:batch_end]
+                
+                processing_log.append(f"\n📦 处理批次 {batch_num + 1}/{total_batches} (数据 {batch_start + 1}-{batch_end})")
+                yield "\n".join(processing_log), "", overall_progress
+                
+                # 使用线程池处理当前批次
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # 提交当前批次的任务
+                    future_to_index = {executor.submit(process_single_item, item): item[0] for item in batch_data}
+                    
+                    # 收集当前批次的结果
+                    batch_processed = 0
+                    for future in as_completed(future_to_index):
+                        # 检查是否请求中断
+                        if is_processing_interrupted():
+                            processing_log.append(f"\n⏹️ 检测到中断请求，停止当前批次的处理...")
+                            # 取消未完成的任务
+                            for f in future_to_index:
+                                if not f.done():
+                                    f.cancel()
+                            yield "\n".join(processing_log), "", overall_progress
+                            break
+                            
+                        try:
+                            index, result, success = future.result()
+                            results_dict[index] = result
+                            processed_count += 1
+                            global_processed_count += 1
+                            batch_processed += 1
+                            
+                            # 计算进度
+                            column_progress = processed_count / total_items * 100
+                            overall_progress = global_processed_count / total_items_all_columns * 100
+                            
+                            # 计算处理速度
+                            elapsed_time = time.time() - start_time
+                            if elapsed_time > 0:
+                                speed = processed_count / elapsed_time
+                                remaining_items = total_items - processed_count
+                                eta = remaining_items / speed if speed > 0 else 0
+                                
+                                # 批次内进度显示（每处理5个或批次完成时更新）
+                                if batch_processed % 5 == 0 or batch_processed == len(batch_data):
+                                    current_log = processing_log.copy()
+                                    status_msg = (
+                                        f"🔄 实时状态 | 列: {column} ({col_index + 1}/{len(columns_to_process)}) | "
+                                        f"批次: {batch_num + 1}/{total_batches} | "
+                                        f"批次进度: {batch_processed}/{len(batch_data)} | "
+                                        f"当前列进度: {processed_count}/{total_items} ({column_progress:.1f}%) | "
+                                        f"总体进度: {global_processed_count}/{total_items_all_columns} ({overall_progress:.1f}%) | "
+                                        f"处理速度: {speed:.1f}条/秒 | 预计剩余时间: {eta:.0f}秒"
+                                    )
+                                    current_log.append(status_msg)
+                                    
+                                    # 显示最近处理的内容预览
+                                    if success and len(result) > 0:
+                                        preview_text = result[:50] + "..." if len(result) > 50 else result
+                                        current_log.append(f"   ✅ 最新处理结果预览: {preview_text}")
+                                    elif not success:
+                                        current_log.append(f"   ❌ 处理失败: {result}")
+                                    
+                                    # 实时输出状态
+                                    yield "\n".join(current_log), "", overall_progress
+                            
+                        except Exception as e:
+                            logger.error(f"获取处理结果失败: {str(e)}")
+                            global_processed_count += 1
+                            batch_processed += 1
+                
+                # 批次完成后的状态更新
+                if not is_processing_interrupted():
+                    processing_log.append(f"   ✅ 批次 {batch_num + 1} 完成，处理了 {batch_processed} 条数据")
+                    yield "\n".join(processing_log), "", overall_progress
+                else:
+                    break
             
             # 构建完整的结果列表
             full_results = []
@@ -849,9 +1491,12 @@ def process_data_stream(file_upload, selected_columns, task_name: str,
             # 输出列完成状态
             yield "\n".join(processing_log), "", overall_progress
         
-        # 保存结果
+        # 保存结果（包括中断情况下的部分结果）
         processing_log.append("\n" + "="*50)
-        processing_log.append("💾 正在保存处理结果...")
+        if is_processing_interrupted():
+            processing_log.append("⏹️ 处理已中断，正在保存部分处理结果...")
+        else:
+            processing_log.append("💾 正在保存处理结果...")
         processing_log.append(f"📁 输出目录: {Path(__file__).parent / 'output'}")
         
         # 输出保存开始状态
@@ -897,7 +1542,10 @@ def process_data_stream(file_upload, selected_columns, task_name: str,
                 
                 # 生成最终统计信息
                 processing_log.append("\n" + "="*50)
-                processing_log.append("🎯 === 最终处理统计报告 === 🎯")
+                if is_processing_interrupted():
+                    processing_log.append("⏹️ === 中断处理统计报告 === ⏹️")
+                else:
+                    processing_log.append("🎯 === 最终处理统计报告 === 🎯")
                 processing_log.append(f"📋 处理任务: {task_name}")
                 processing_log.append(f"📊 处理列数: {len(columns_to_process)} 列")
                 processing_log.append(f"📈 总数据量: {total_items_all_columns} 条")
@@ -910,7 +1558,10 @@ def process_data_stream(file_upload, selected_columns, task_name: str,
                 processing_log.append(f"💾 输出位置: {output_path}")
                 processing_log.append(f"⏰ 完成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
                 processing_log.append("="*50)
-                processing_log.append(f"🎉 所有处理任务已成功完成！")
+                if is_processing_interrupted():
+                    processing_log.append(f"⏹️ 处理已中断，已保存部分结果！")
+                else:
+                    processing_log.append(f"🎉 所有处理任务已成功完成！")
                 
                 final_message = "\n".join(processing_log)
                 
@@ -1608,12 +2259,53 @@ def create_interface():
                     with gr.Column(scale=1):
                         # 文件上传
                         gr.Markdown("### 文件上传")
-                        file_upload = gr.File(
-                            label="上传文件",
-                            file_types=[".txt", ".md", ".csv", ".xlsx", ".xls", ".pdf", ".docx", ".doc"]
+                        
+                        # 上传模式选择
+                        upload_mode = gr.Radio(
+                            choices=["单个文件", "目录上传"],
+                            value="单个文件",
+                            label="上传模式"
                         )
                         
+                        # 单个文件上传
+                        file_upload = gr.File(
+                            label="上传文件",
+                            file_types=[".txt", ".md", ".csv", ".xlsx", ".xls", ".pdf", ".docx", ".doc"],
+                            visible=True
+                        )
+                        
+                        # 目录上传
+                        directory_upload = gr.File(
+                            label="选择目录中的文件",
+                            file_count="multiple",
+                            file_types=[".txt", ".md", ".csv", ".xlsx", ".xls", ".pdf", ".docx", ".doc"],
+                            visible=False
+                        )
+                        
+                        # 文件匹配过滤
+                        with gr.Group(visible=False) as file_filter_group:
+                            gr.Markdown("#### 文件过滤设置")
+                            file_pattern = gr.Textbox(
+                                label="文件名匹配模式",
+                                placeholder="例如: *.txt 或 data_*.csv 或留空处理所有文件",
+                                value=""
+                            )
+                            file_extension_filter = gr.CheckboxGroup(
+                                choices=[".txt", ".md", ".csv", ".xlsx", ".xls", ".pdf", ".docx", ".doc"],
+                                value=[".txt", ".md", ".csv", ".xlsx", ".xls", ".pdf", ".docx", ".doc"],
+                                label="允许的文件类型"
+                            )
+                            apply_filter_btn = gr.Button("🔍 应用过滤器", variant="secondary")
+                        
                         file_info = gr.Textbox(label="文件信息", interactive=False)
+                        
+                        # 匹配的文件列表（仅目录模式显示）
+                        matched_files_display = gr.Textbox(
+                            label="匹配的文件列表",
+                            lines=3,
+                            interactive=False,
+                            visible=False
+                        )
                         
                         # 列选择（仅对表格文件显示）
                         column_dropdown = gr.Dropdown(
@@ -1634,11 +2326,11 @@ def create_interface():
                         gr.Markdown("### 处理参数")
                         with gr.Row():
                             batch_size = gr.Slider(
-                                minimum=1, maximum=50, value=10, step=1,
+                                minimum=1, maximum=8000, value=10, step=1,
                                 label="批次大小"
                             )
                             max_workers = gr.Slider(
-                                minimum=1, maximum=50, value=3, step=1,
+                                minimum=1, maximum=200, value=3, step=1,
                                 label="并发数"
                             )
                         
@@ -1659,6 +2351,7 @@ def create_interface():
                         # 处理按钮
                         with gr.Row():
                             process_btn = gr.Button("🔄 开始处理", variant="primary", size="lg")
+                            interrupt_btn = gr.Button("⏹️ 中断处理", variant="stop", size="lg")
                             clear_btn = gr.Button("🗑️ 清除结果", variant="secondary", size="lg")
                     
                     with gr.Column(scale=1):
@@ -1708,11 +2401,71 @@ def create_interface():
             outputs=[model_status, preset_dropdown]
         )
         
-        # 文件上传处理
+        # 上传模式切换处理
+        def toggle_upload_mode(mode):
+            """切换上传模式显示"""
+            if mode == "单个文件":
+                return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
+            else:  # 目录上传
+                return gr.update(visible=False), gr.update(visible=True), gr.update(visible=True)
+        
+        upload_mode.change(
+            fn=toggle_upload_mode,
+            inputs=[upload_mode],
+            outputs=[file_upload, directory_upload, file_filter_group]
+        )
+        
+        # 单个文件上传处理
         file_upload.change(
             fn=handle_file_upload,
             inputs=[file_upload],
             outputs=[file_info, file_preview, column_dropdown]
+        )
+        
+        # 目录上传处理
+        def handle_directory_change(files):
+            """处理目录上传变化"""
+            if not files:
+                return "", "", gr.update(choices=[], visible=False), ""
+            
+            # 获取所有文件路径
+            file_paths = [f.name for f in files]
+            
+            # 显示文件列表
+            file_list = "\n".join([f"📄 {os.path.basename(path)}" for path in file_paths])
+            matched_files_display = f"📁 已选择 {len(file_paths)} 个文件:\n{file_list}"
+            
+            return "", "", gr.update(choices=[], visible=False), matched_files_display
+        
+        directory_upload.change(
+            fn=handle_directory_change,
+            inputs=[directory_upload],
+            outputs=[file_info, file_preview, column_dropdown, matched_files_display]
+        )
+        
+        # 应用文件过滤器
+        def apply_file_filter(files, pattern, extensions):
+            """应用文件过滤器"""
+            if not files:
+                return "", "", gr.update(choices=[], visible=False), "❌ 请先选择目录"
+            
+            try:
+                # 获取文件路径列表
+                file_paths = [f.name for f in files]
+                
+                # 应用过滤器
+                info, preview, dropdown_update = handle_directory_upload(
+                    files, pattern, extensions
+                )
+                
+                return info, preview, dropdown_update, info.split("\n")[0] if info else "✅ 过滤器已应用"
+            except Exception as e:
+                return "", "", gr.update(choices=[], visible=False), f"❌ 过滤器应用失败: {str(e)}"
+        
+        apply_filter_btn.click(
+            fn=apply_file_filter,
+            inputs=[directory_upload, file_pattern, file_extension_filter],
+            outputs=[file_info, file_preview, column_dropdown, matched_files_display]
         )
         
         # 任务选择时显示提示词
@@ -1756,24 +2509,40 @@ def create_interface():
             return log, preview, progress
         
         # 实时进度更新函数
-        def start_processing(file_upload, column_dropdown, selected_task, batch_size, max_workers, save_location, custom_save_path):
+        def start_processing(upload_mode, single_file, directory_files, column_dropdown, selected_task, batch_size, max_workers, save_location, custom_save_path):
             """开始处理并显示实时进度"""
             # 重置进度
             yield "🚀 开始处理...", "", 0.0
             
+            # 根据上传模式选择文件输入
+            if upload_mode == "单个文件":
+                file_input = single_file
+            else:
+                file_input = directory_files
+            
+            if not file_input:
+                yield "❌ 请先上传文件", "", 0.0
+                return
+            
             # 调用流式处理函数
             try:
-                for log, preview, progress in process_data_stream(file_upload, column_dropdown, selected_task, batch_size, max_workers, save_location, custom_save_path):
+                for log, preview, progress in process_data_stream(file_input, column_dropdown, selected_task, batch_size, max_workers, save_location, custom_save_path):
                     yield log, preview, progress
             except Exception as e:
                 yield f"❌ 处理过程中发生错误: {str(e)}", "", 0.0
         
         process_btn.click(
              fn=start_processing,
-             inputs=[file_upload, column_dropdown, selected_task, batch_size, max_workers, save_location, custom_save_path],
+             inputs=[upload_mode, file_upload, directory_upload, column_dropdown, selected_task, batch_size, max_workers, save_location, custom_save_path],
              outputs=[process_output, result_preview, processing_progress]
          )
          
+        # 中断处理功能
+        interrupt_btn.click(
+            fn=interrupt_processing,
+            outputs=[process_output]
+        )
+        
          # 清除结果功能
         def clear_results():
             return "", "", 0.0
